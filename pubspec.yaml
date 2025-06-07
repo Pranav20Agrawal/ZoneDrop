@@ -1,0 +1,56 @@
+name: final_zd
+description: "A new Flutter project."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.8.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8 # This is a runtime dependency
+  flutter_map: ^6.2.1
+  latlong2: ^0.9.1
+  flutter_map_heatmap: ^0.0.7
+  geolocator: ^14.0.1
+  flutter_map_marker_popup: ^6.1.2
+  network_info_plus: ^6.1.4
+  another_telephony: ^0.4.1
+  connectivity_plus: ^6.1.4
+  permission_handler: ^12.0.0+1
+  google_fonts: ^6.2.1
+  lottie: ^3.3.1
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
+  path_provider: ^2.1.5
+  http: ^1.4.0
+  hive_generator: ^2.0.1
+  app_settings: ^6.1.1
+  dropdown_button2: ^2.3.9
+  shared_preferences: ^2.5.3
+
+dev_dependencies: # <--- This is where flutter_launcher_icons should go
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+  flutter_launcher_icons: "^0.14.3" # <--- Move it here
+  build_runner: ^2.4.15
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/logo.png
+    - assets/app_icon.png
+    - assets/splash_animation.json
+    - assets/splash_loading.json
+
+flutter_launcher_icons:
+  android: "launcher_icon"
+  ios: true
+  image_path: "assets/app_icon.png" # Make sure you have app_icon.png in your assets folder
+  min_sdk_android: 21
+  remove_alpha_ios: true
+  # adaptive_icon_background: "#ffffff"
+  # adaptive_icon_foreground: "assets/app_icon_foreground.png"
