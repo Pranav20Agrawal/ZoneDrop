@@ -1,8 +1,12 @@
 import 'package:flutter/material.dart';
 import 'splash_screen.dart';
 import 'package:final_zd/theme/app_colors.dart'; // Import your new app_colors.dart
+import 'package:flutter_map_tile_caching/flutter_map_tile_caching.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  // REQUIRED: Set up the tile cache engine
+  await FMTCObjectBoxBackend().initialise();
   runApp(const MyApp());
 }
 

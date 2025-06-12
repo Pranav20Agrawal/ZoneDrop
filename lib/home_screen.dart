@@ -11,6 +11,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'dart:async';
 import 'dart:convert'; // for jsonEncode/jsonDecode
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_map_tile_caching/flutter_map_tile_caching.dart';
 
 class LatLngTween extends Tween<LatLng> {
   LatLngTween({super.begin, super.end});
@@ -1781,10 +1782,16 @@ class _HomeScreenState extends State<HomeScreen>
                                     Switch(
                                       value: _showCurrentLocationMarker,
                                       onChanged: (value) {
-                                        setState(
-                                          () => _showCurrentLocationMarker =
-                                              value,
-                                        );
+                                        setState(() {
+                                          _showCurrentLocationMarker = value;
+                                          if (value &&
+                                              _currentLocation != null) {
+                                            _mapController.move(
+                                              _currentLocation!,
+                                              _currentZoom,
+                                            ); // Move map to current location
+                                          }
+                                        });
                                       },
                                       activeColor: Colors.white,
                                       activeTrackColor: Theme.of(
@@ -1811,6 +1818,7 @@ class _HomeScreenState extends State<HomeScreen>
                   child: Stack(
                     children: [
                       FlutterMap(
+                        mapController: _mapController,
                         options: MapOptions(
                           initialCenter: _currentLocation!,
                           initialZoom: _currentZoom,
@@ -1826,6 +1834,9 @@ class _HomeScreenState extends State<HomeScreen>
                           TileLayer(
                             urlTemplate:
                                 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                            tileProvider: FMTCStore(
+                              'OSMCache',
+                            ).getTileProvider(),
                             userAgentPackageName: 'com.example.final_zd',
                           ),
                           if (_filteredHeatPoints.isNotEmpty)

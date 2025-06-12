@@ -30,6 +30,9 @@ dependencies:
   app_settings: ^6.1.1
   dropdown_button2: ^2.3.9
   shared_preferences: ^2.5.3
+  workmanager: ^0.6.0
+  intl: ^0.20.2
+  flutter_map_tile_caching: ^9.0.1
 
 dev_dependencies: # <--- This is where flutter_launcher_icons should go
   flutter_test:
