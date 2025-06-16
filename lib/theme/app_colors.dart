@@ -7,7 +7,7 @@ MaterialColor createMaterialColor(Color color) {
   Map<int, Color> swatches = {};
   final int r = color.red, g = color.green, b = color.blue;
 
-  for (int i = 0; i < 10; i++) {
+  for (int i = 1; i < 10; i++) {
     strengths.add(0.1 * i);
   }
 
@@ -20,11 +20,13 @@ MaterialColor createMaterialColor(Color color) {
       1,
     );
   }
+
   return MaterialColor(color.value, swatches);
 }
 
-// Your new color palette
+// Your enhanced color palette
 class AppColors {
+  // Light theme colors
   static const Color curiousBlue = Color(0xFF288DE3);
   static const Color jordyBlue = Color(0xFF7CBCF0);
   static const Color aquaHaze = Color(0xFFEDF2F5);
@@ -36,11 +38,73 @@ class AppColors {
   static const Color silverSand = Color(0xFFC7C8CA);
   static const Color pumice = Color(0xFFB3B4B3);
 
-  // You can also create MaterialColor swatches for your primary colors if needed
+  // Dark theme specific colors - Updated with your custom palette
+  static const Color darkBackground = Color(0xFF1B1A55); // Deep base
+  static const Color darkSurface = Color(0xFF402E7A); // From your palette
+  static const Color darkSurfaceVariant = Color(0xFF4C3BCF); // Vibrant mid-tone
+  static const Color darkOnSurface = Color(
+    0xFF3DC2EC,
+  ); // Bright cyan for contrast text/icons
+  static const Color darkOnSurfaceVariant = Color(
+    0xFF4B70F5,
+  ); // Lighter blue variant
+  static const Color darkOutline = Color(
+    0xFF3DC2EC,
+  ); // Cyan as highlight outline
+  static const Color darkCardColor = Color(
+    0xFF2B275A,
+  ); // Slightly lighter than background
+  static const Color darkPrimary = Color(0xFF4B70F5); // Primary action color
+  static const Color darkSecondary = Color(0xFF4C3BCF); // Secondary color
+  static const Color darkAccent = Color(
+    0xFF3DC2EC,
+  ); // Accent for highlights/badges
+
+  // Material color swatches
   static final MaterialColor curiousBlueSwatch = createMaterialColor(
     curiousBlue,
   );
   static final MaterialColor jordyBlueSwatch = createMaterialColor(jordyBlue);
   static final MaterialColor sharkSwatch = createMaterialColor(shark);
   static final MaterialColor doveGraySwatch = createMaterialColor(doveGray);
+  static final MaterialColor darkPrimarySwatch = createMaterialColor(
+    darkPrimary,
+  );
+
+  // Utility methods for theme-aware colors
+  static Color getBackgroundColor(BuildContext context) {
+    return Theme.of(context).brightness == Brightness.dark
+        ? darkBackground
+        : aquaHaze;
+  }
+
+  static Color getSurfaceColor(BuildContext context) {
+    return Theme.of(context).brightness == Brightness.dark
+        ? darkSurface
+        : Colors.white;
+  }
+
+  static Color getCardColor(BuildContext context) {
+    return Theme.of(context).brightness == Brightness.dark
+        ? darkCardColor
+        : Colors.white;
+  }
+
+  static Color getOnSurfaceColor(BuildContext context) {
+    return Theme.of(context).brightness == Brightness.dark
+        ? darkOnSurface
+        : shark;
+  }
+
+  static Color getPrimaryColor(BuildContext context) {
+    return Theme.of(context).brightness == Brightness.dark
+        ? darkPrimary
+        : curiousBlue;
+  }
+
+  static Color getSecondaryColor(BuildContext context) {
+    return Theme.of(context).brightness == Brightness.dark
+        ? darkSecondary
+        : tropicalBlue;
+  }
 }

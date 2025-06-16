@@ -12,6 +12,11 @@ import 'dart:async';
 import 'dart:convert'; // for jsonEncode/jsonDecode
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_map_tile_caching/flutter_map_tile_caching.dart';
+import 'package:provider/provider.dart';
+import '../theme/theme_provider.dart';
+import 'package:http/http.dart' as http;
+import 'package:final_zd/theme/app_colors.dart';
+import 'screens/stats_dashboard.dart';
 
 class LatLngTween extends Tween<LatLng> {
   LatLngTween({super.begin, super.end});
@@ -68,8 +73,8 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen>
     with TickerProviderStateMixin, WidgetsBindingObserver {
-  String? _selectedNetworkType = 'All';
-  String? _selectedCarrier = 'All';
+  String _selectedNetworkType = 'All';
+  String _selectedCarrier = 'All';
   final List<String> _networkTypes = ['All', '5G', '4G', 'Wi-Fi'];
   final List<String> _carriers = ['All', 'Airtel', 'Jio', 'VI', 'BSNL', 'ACT'];
   List<NetworkWeightedLatLng> _allSubmittedReadings = [];
@@ -82,11 +87,23 @@ class _HomeScreenState extends State<HomeScreen>
   late Animation<LatLng> _markerAnimation;
   bool _isLocating = true;
   bool _isSubmitting = false;
+  final double _filterOptionHeight = 36.0;
 
   bool _isContinuousModeOn = false;
   Timer? _continuousTimer;
   bool _showCurrentLocationMarker = true;
   bool _isOptionsExpanded = false;
+
+  bool _isLegendExpanded = false;
+  final GlobalKey _legendButtonKey = GlobalKey();
+
+  // Search functionality variables
+  bool _isSearchExpanded = false;
+  final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocusNode = FocusNode();
+  List<Map<String, dynamic>> _searchResults = [];
+  bool _isSearching = false;
+  Timer? _searchDebounceTimer;
 
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
@@ -96,7 +113,6 @@ class _HomeScreenState extends State<HomeScreen>
   double _networkHighlightWidth = 0.0;
   double _carrierHighlightLeft = 0.0;
   double _carrierHighlightWidth = 0.0;
-  final double _filterOptionHeight = 36.0;
   int _selectedIndex = 0;
 
   // Animation controllers
@@ -105,6 +121,10 @@ class _HomeScreenState extends State<HomeScreen>
   late AnimationController _fadeController;
   late final MapController _mapController;
   late final PageController _pageController;
+
+  // Search animation controllers
+  late AnimationController _searchAnimationController;
+  late Animation<double> _searchAnimation;
 
   // Plugin Instances
   final NetworkInfo _networkInfo = NetworkInfo();
@@ -115,6 +135,9 @@ class _HomeScreenState extends State<HomeScreen>
 
   double _navHighlightLeft = 0.0;
   double _navHighlightWidth = 0.0;
+
+  // Add a GlobalKey for the navigation bar stack (if you don't have it already)
+  final GlobalKey _navBarStackKey = GlobalKey();
 
   // Add a GlobalKey to get the size of the bottom nav bar items
   final Map<String, GlobalKey> _navKeys = {
@@ -155,6 +178,20 @@ class _HomeScreenState extends State<HomeScreen>
     // Start listening for location updates
     _startLocationTracking();
     _loadDataFromPrefs();
+
+    // Initialize search animation controller
+    _searchAnimationController = AnimationController(
+      duration: const Duration(milliseconds: 300),
+      vsync: this,
+    );
+
+    _searchAnimation = CurvedAnimation(
+      parent: _searchAnimationController,
+      curve: Curves.easeInOutCubic,
+    );
+
+    // Search text field listener
+    _searchController.addListener(_onSearchChanged);
 
     // No need to call _determinePosition here again if _initializeApp calls it.
     // _determinePosition(); // This is already called by _initializeApp()
@@ -266,7 +303,7 @@ class _HomeScreenState extends State<HomeScreen>
 
   void _calculateInitialHighlightPositions() {
     // Calculate network type highlight with proper padding
-    final networkIndex = _networkTypes.indexOf(_selectedNetworkType!);
+    final networkIndex = _networkTypes.indexOf(_selectedNetworkType);
     final containerWidth =
         MediaQuery.of(context).size.width - 32; // Account for outer padding
     final networkItemWidth =
@@ -276,7 +313,7 @@ class _HomeScreenState extends State<HomeScreen>
     _networkHighlightWidth = networkItemWidth - 4;
 
     // Calculate carrier highlight with proper padding
-    final carrierIndex = _carriers.indexOf(_selectedCarrier!);
+    final carrierIndex = _carriers.indexOf(_selectedCarrier);
     final carrierItemWidth = (containerWidth - 8) / _carriers.length;
     _carrierHighlightLeft = carrierIndex * carrierItemWidth + 2;
     _carrierHighlightWidth = carrierItemWidth - 4;
@@ -325,6 +362,10 @@ class _HomeScreenState extends State<HomeScreen>
     _mapController.dispose(); // Add this line to dispose the map controller
     _pageController.dispose();
     _continuousTimer?.cancel();
+    _searchAnimationController.dispose();
+    _searchController.dispose();
+    _searchFocusNode.dispose();
+    _searchDebounceTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -359,6 +400,392 @@ class _HomeScreenState extends State<HomeScreen>
       debugPrint("❌ Failed to get WiFi signal: ${e.message}");
       return null;
     }
+  }
+
+  void _onSearchChanged() {
+    _searchDebounceTimer?.cancel();
+    _searchDebounceTimer = Timer(const Duration(milliseconds: 500), () {
+      if (_searchController.text.isNotEmpty) {
+        _performSearch(_searchController.text);
+      } else {
+        setState(() {
+          _searchResults.clear();
+        });
+      }
+    });
+  }
+
+  Future<void> _performSearch(String query) async {
+    if (query.trim().isEmpty) return;
+
+    setState(() {
+      _isSearching = true;
+    });
+
+    try {
+      final encodedQuery = Uri.encodeComponent(query.trim());
+      final url =
+          'https://nominatim.openstreetmap.org/search?format=json&limit=5&q=$encodedQuery&countrycodes=in';
+
+      final response = await http.get(
+        Uri.parse(url),
+        headers: {'User-Agent': 'ZoneDrop/1.0 (Flutter App)'},
+      );
+
+      if (response.statusCode == 200) {
+        final List<dynamic> data = json.decode(response.body);
+        if (mounted) {
+          setState(() {
+            _searchResults = data
+                .map(
+                  (item) => {
+                    'display_name': item['display_name'] as String,
+                    'lat': double.parse(item['lat']),
+                    'lon': double.parse(item['lon']),
+                    'type': item['type'] ?? 'location',
+                    'class': item['class'] ?? 'place',
+                    'icon': _getLocationIcon(item['type'], item['class']),
+                  },
+                )
+                .toList();
+          });
+        }
+      }
+    } catch (e) {
+      print('Search error: $e');
+      if (mounted) {
+        _showCustomSnackBar(
+          message: 'Search failed. Please try again.',
+          icon: Icons.error_outline,
+          backgroundColor: Colors.red.shade600,
+          duration: const Duration(seconds: 2),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSearching = false;
+        });
+      }
+    }
+  }
+
+  IconData _getLocationIcon(String? type, String? className) {
+    switch (type?.toLowerCase()) {
+      case 'university':
+      case 'college':
+      case 'school':
+        return Icons.school;
+      case 'hospital':
+        return Icons.local_hospital;
+      case 'restaurant':
+      case 'cafe':
+        return Icons.restaurant;
+      case 'hotel':
+        return Icons.hotel;
+      case 'shop':
+      case 'mall':
+        return Icons.shopping_bag;
+      case 'park':
+        return Icons.park;
+      case 'bus_stop':
+        return Icons.directions_bus;
+      case 'railway':
+        return Icons.train;
+      default:
+        if (className == 'amenity') return Icons.place_outlined;
+        if (className == 'building') return Icons.business;
+        if (className == 'highway') return Icons.route;
+        return Icons.location_on;
+    }
+  }
+
+  void _toggleSearch() {
+    setState(() {
+      _isSearchExpanded = !_isSearchExpanded;
+    });
+
+    if (_isSearchExpanded) {
+      _searchAnimationController.forward();
+      Future.delayed(const Duration(milliseconds: 150), () {
+        if (mounted) {
+          _searchFocusNode.requestFocus();
+        }
+      });
+    } else {
+      _searchAnimationController.reverse();
+      _searchFocusNode.unfocus();
+      _searchController.clear();
+      setState(() {
+        _searchResults.clear();
+      });
+    }
+  }
+
+  void _jumpToLocation(double lat, double lon, String name) {
+    final targetLocation = LatLng(lat, lon);
+
+    // Close search
+    _toggleSearch();
+
+    // Animate to location
+    _mapController.move(targetLocation, 16.0);
+
+    // Show success message
+    _showCustomSnackBar(
+      message: 'Jumped to location',
+      subtitle: name.length > 50 ? '${name.substring(0, 50)}...' : name,
+      icon: Icons.my_location,
+      backgroundColor: Colors.green.shade600,
+      duration: const Duration(seconds: 2),
+    );
+  }
+
+  Widget _buildSearchButton() {
+    return Container(
+      margin: const EdgeInsets.only(right: 8),
+      child: IconButton(
+        onPressed: _toggleSearch,
+        icon: const Icon(Icons.search_rounded),
+        style: IconButton.styleFrom(
+          backgroundColor: Colors.white.withOpacity(0.2),
+          foregroundColor: Colors.white,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+        ),
+        tooltip: 'Search Location',
+      ),
+    );
+  }
+
+  Widget _buildSearchOverlay() {
+    return AnimatedBuilder(
+      animation: _searchAnimation,
+      builder: (context, child) {
+        return Positioned(
+          top: 0,
+          left: 0,
+          right: 0,
+          child: Container(
+            margin: const EdgeInsets.all(16),
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(context).size.height * 0.7,
+            ),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(16),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.2 * _searchAnimation.value),
+                  blurRadius: 15 * _searchAnimation.value,
+                  offset: Offset(0, 8 * _searchAnimation.value),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Search input header
+                Container(
+                  height: 64,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade50,
+                    borderRadius: const BorderRadius.only(
+                      topLeft: Radius.circular(16),
+                      topRight: Radius.circular(16),
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      // Back button
+                      IconButton(
+                        onPressed: _toggleSearch,
+                        icon: const Icon(Icons.arrow_back_rounded),
+                        color: Colors.grey.shade700,
+                        splashRadius: 24,
+                      ),
+                      // Search field
+                      Expanded(
+                        child: TextField(
+                          controller: _searchController,
+                          focusNode: _searchFocusNode,
+                          decoration: InputDecoration(
+                            hintText: 'Search for places in India...',
+                            hintStyle: TextStyle(color: Colors.grey.shade500),
+                            border: InputBorder.none,
+                            contentPadding: const EdgeInsets.symmetric(
+                              vertical: 16,
+                              horizontal: 12,
+                            ),
+                          ),
+                          style: const TextStyle(fontSize: 16),
+                          textInputAction: TextInputAction.search,
+                          onSubmitted: (value) {
+                            if (value.trim().isNotEmpty) {
+                              _performSearch(value.trim());
+                            }
+                          },
+                          onChanged: (value) {
+                            _onSearchChanged(); // This triggers debounced search
+                          },
+                        ),
+                      ),
+                      // Search/Loading button
+                      if (_isSearching)
+                        Container(
+                          width: 24,
+                          height: 24,
+                          margin: const EdgeInsets.only(right: 16),
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2.5,
+                            valueColor: AlwaysStoppedAnimation<Color>(
+                              Theme.of(context).primaryColor,
+                            ),
+                          ),
+                        )
+                      else
+                        IconButton(
+                          onPressed: () {
+                            final query = _searchController.text.trim();
+                            if (query.isNotEmpty) {
+                              _performSearch(query);
+                            }
+                          },
+                          icon: const Icon(Icons.search_rounded),
+                          color: Theme.of(context).primaryColor,
+                          splashRadius: 20,
+                          tooltip: 'Search',
+                        ),
+                      // Clear button
+                      if (_searchController.text.isNotEmpty)
+                        IconButton(
+                          onPressed: () {
+                            _searchController.clear();
+                            setState(() {
+                              _searchResults.clear();
+                            });
+                          },
+                          icon: const Icon(Icons.clear_rounded),
+                          color: Colors.grey.shade500,
+                          splashRadius: 20,
+                        ),
+                    ],
+                  ),
+                ),
+
+                // Search results - Fixed the overflow issue here
+                if (_searchResults.isNotEmpty)
+                  Flexible(
+                    // Changed from direct widget to Flexible
+                    child: _buildSearchResultsList(),
+                  )
+                else if (!_isSearching && _searchController.text.isNotEmpty)
+                  // Show "No results" message
+                  Container(
+                    padding: const EdgeInsets.all(32),
+                    child: Column(
+                      children: [
+                        Icon(
+                          Icons.search_off_rounded,
+                          size: 48,
+                          color: Colors.grey.shade400,
+                        ),
+                        const SizedBox(height: 16),
+                        Text(
+                          'No results found',
+                          style: TextStyle(
+                            fontSize: 16,
+                            color: Colors.grey.shade600,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Try searching for a different location',
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: Colors.grey.shade500,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildSearchResultsList() {
+    return ListView.separated(
+      shrinkWrap: true,
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      itemCount: _searchResults.length,
+      physics: const BouncingScrollPhysics(),
+      separatorBuilder: (context, index) => Divider(
+        height: 1,
+        color: Colors.grey.shade200,
+        indent: 16,
+        endIndent: 16,
+      ),
+      itemBuilder: (context, index) {
+        final result = _searchResults[index];
+        return ListTile(
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 16,
+            vertical: 8,
+          ),
+          leading: Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: Theme.of(context).primaryColor.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(
+              result['icon'] as IconData,
+              color: Theme.of(context).primaryColor,
+              size: 20,
+            ),
+          ),
+          title: Text(
+            _getShortLocationName(result['display_name']),
+            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          subtitle: Text(
+            result['display_name'],
+            style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+          trailing: Icon(
+            Icons.arrow_forward_ios_rounded,
+            size: 16,
+            color: Colors.grey.shade400,
+          ),
+          onTap: () {
+            _jumpToLocation(
+              result['lat'],
+              result['lon'],
+              result['display_name'],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  String _getShortLocationName(String fullName) {
+    final parts = fullName.split(',');
+    if (parts.isNotEmpty) {
+      return parts.first.trim();
+    }
+    return fullName;
   }
 
   Future<void> _saveDataToPrefs() async {
@@ -540,12 +967,10 @@ class _HomeScreenState extends State<HomeScreen>
   void _applyHeatmapFilter() {
     setState(() {
       _filteredHeatPoints = _heatPoints.where((point) {
-        bool matchesNetworkType =
-            (_selectedNetworkType == null || _selectedNetworkType == 'All')
+        bool matchesNetworkType = (_selectedNetworkType == 'All')
             ? true
             : point.networkType == _selectedNetworkType;
-        bool matchesCarrier =
-            (_selectedCarrier == null || _selectedCarrier == 'All')
+        bool matchesCarrier = (_selectedCarrier == 'All')
             ? true
             : point.carrier == _selectedCarrier;
         return matchesNetworkType && matchesCarrier;
@@ -825,6 +1250,150 @@ class _HomeScreenState extends State<HomeScreen>
     };
   }
 
+  // Method for theme options
+  Widget _buildThemeOption({
+    required String title,
+    required IconData icon,
+    required ThemeMode value,
+    required dynamic themeProvider, // Your ThemeProvider instance
+  }) {
+    final isSelected = themeProvider.themeMode == value;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(10),
+          onTap: () {
+            themeProvider.setTheme(value);
+          },
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+            decoration: BoxDecoration(
+              color: isSelected
+                  ? Theme.of(context).colorScheme.primary.withOpacity(0.1)
+                  : Colors.transparent,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                color: isSelected
+                    ? Theme.of(context).colorScheme.primary.withOpacity(0.3)
+                    : Colors.transparent,
+                width: 1,
+              ),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  icon,
+                  size: 20,
+                  color: isSelected
+                      ? Theme.of(context).colorScheme.primary
+                      : Theme.of(
+                          context,
+                        ).colorScheme.onSurface.withOpacity(0.7),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    title,
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w500,
+                      color: isSelected
+                          ? Theme.of(context).colorScheme.primary
+                          : Theme.of(context).colorScheme.onSurface,
+                    ),
+                  ),
+                ),
+                AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 200),
+                  child: isSelected
+                      ? Icon(
+                          Icons.check_circle_rounded,
+                          size: 18,
+                          color: Theme.of(context).colorScheme.primary,
+                          key: const ValueKey('selected'),
+                        )
+                      : Icon(
+                          Icons.radio_button_unchecked_rounded,
+                          size: 18,
+                          color: Theme.of(
+                            context,
+                          ).colorScheme.onSurface.withOpacity(0.3),
+                          key: const ValueKey('unselected'),
+                        ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // Enhanced Theme Section Widget
+  Widget buildThemeSection(BuildContext context, dynamic themeProvider) {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 12.0),
+      padding: const EdgeInsets.all(16.0),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.3),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: Theme.of(context).colorScheme.outline.withOpacity(0.2),
+          width: 1,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Section header
+          Row(
+            children: [
+              Icon(
+                Icons.palette_rounded,
+                size: 18,
+                color: Theme.of(context).colorScheme.primary,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                'Theme',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: Theme.of(context).colorScheme.onSurface,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+
+          // Theme options using the updated method
+          _buildThemeOption(
+            title: 'Light',
+            icon: Icons.wb_sunny_rounded,
+            value: ThemeMode.light,
+            themeProvider: themeProvider,
+          ),
+          _buildThemeOption(
+            title: 'Dark',
+            icon: Icons.dark_mode_rounded,
+            value: ThemeMode.dark,
+            themeProvider: themeProvider,
+          ),
+          _buildThemeOption(
+            title: 'System Default',
+            icon: Icons.settings_brightness_rounded,
+            value: ThemeMode.system,
+            themeProvider: themeProvider,
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildNavItem({
     required IconData icon,
     required IconData activeIcon,
@@ -912,8 +1481,6 @@ class _HomeScreenState extends State<HomeScreen>
     });
   }
 
-  final GlobalKey _navBarStackKey = GlobalKey();
-
   void _onNetworkTypeSelected(String type) {
     if (_selectedNetworkType == type) return;
 
@@ -959,27 +1526,31 @@ class _HomeScreenState extends State<HomeScreen>
     required double highlightLeft,
     required double highlightWidth,
   }) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     return Container(
       padding: const EdgeInsets.all(4.0),
       height: _filterOptionHeight + 8,
       decoration: BoxDecoration(
-        color: Colors.grey.shade200,
+        color: isDark
+            ? Theme.of(context).colorScheme.surface
+            : Colors.grey.shade200,
         borderRadius: BorderRadius.circular(20),
         boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 4,
-            offset: const Offset(0, 2),
-          ),
+          if (!isDark)
+            BoxShadow(
+              color: Colors.black.withOpacity(0.05),
+              blurRadius: 4,
+              offset: const Offset(0, 2),
+            ),
         ],
       ),
       child: Stack(
         children: [
-          // Highlight background with smooth animation
           if (_isInitialized)
             AnimatedPositioned(
               duration: const Duration(milliseconds: 400),
-              curve: Curves.easeInOutQuart, // Smoother curve
+              curve: Curves.easeInOutQuart,
               left: highlightLeft,
               width: highlightWidth,
               height: _filterOptionHeight,
@@ -987,8 +1558,8 @@ class _HomeScreenState extends State<HomeScreen>
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
                     colors: [
-                      Theme.of(context).primaryColor,
-                      Theme.of(context).primaryColor.withOpacity(0.8),
+                      AppColors.getPrimaryColor(context),
+                      AppColors.getPrimaryColor(context).withOpacity(0.85),
                     ],
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
@@ -996,14 +1567,11 @@ class _HomeScreenState extends State<HomeScreen>
                   borderRadius: BorderRadius.circular(18),
                   boxShadow: [
                     BoxShadow(
-                      color: Theme.of(context).primaryColor.withOpacity(0.3),
+                      color: AppColors.getPrimaryColor(
+                        context,
+                      ).withOpacity(0.3),
                       blurRadius: 8,
                       offset: const Offset(0, 3),
-                    ),
-                    BoxShadow(
-                      color: Colors.white.withOpacity(0.1),
-                      blurRadius: 1,
-                      offset: const Offset(0, 1),
                     ),
                   ],
                 ),
@@ -1018,11 +1586,9 @@ class _HomeScreenState extends State<HomeScreen>
                 ),
               ),
             ),
-          // Filter options
           Row(
             children: options.map((option) {
               final isSelected = selectedValue == option;
-
               return Expanded(
                 child: GestureDetector(
                   onTap: () => onTap(option),
@@ -1039,7 +1605,11 @@ class _HomeScreenState extends State<HomeScreen>
                     child: AnimatedDefaultTextStyle(
                       duration: const Duration(milliseconds: 200),
                       style: TextStyle(
-                        color: isSelected ? Colors.white : Colors.black87,
+                        color: isSelected
+                            ? Colors.white
+                            : isDark
+                            ? Colors.white70
+                            : Colors.black87,
                         fontWeight: isSelected
                             ? FontWeight.w600
                             : FontWeight.w500,
@@ -1065,6 +1635,272 @@ class _HomeScreenState extends State<HomeScreen>
         ],
       ),
     );
+  }
+
+  Widget _buildFloatingLegend() {
+    return Positioned(
+      top: 16.0,
+      right: 16.0,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          // Legend Content (appears above the button)
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 500),
+            curve: Curves.easeInOutCubic,
+            height: _isLegendExpanded ? null : 0,
+            child: AnimatedOpacity(
+              duration: const Duration(milliseconds: 400),
+              opacity: _isLegendExpanded ? 1.0 : 0.0,
+              child: Container(
+                margin: const EdgeInsets.only(bottom: 12),
+                padding: const EdgeInsets.all(16),
+                constraints: const BoxConstraints(maxWidth: 200),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.15),
+                      blurRadius: 20,
+                      spreadRadius: 2,
+                      offset: const Offset(0, 8),
+                    ),
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.05),
+                      blurRadius: 5,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Header
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Signal Strength',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.black87,
+                          ),
+                        ),
+                        Icon(
+                          Icons.signal_cellular_alt,
+                          size: 18,
+                          color: Colors.grey.shade600,
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+
+                    // Gradient Bar
+                    Container(
+                      height: 20,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(10),
+                        gradient: const LinearGradient(
+                          colors: [
+                            Color(0xFF03A9F4), // Light Blue
+                            Color(0xFF2196F3), // Blue
+                            Color(0xFF3F51B5), // Indigo
+                            Color(0xFF00BCD4), // Cyan
+                            Color(0xFF8BC34A), // Light Green
+                            Color(0xFF4CAF50), // Green
+                            Color(0xFFCDDC39), // Lime
+                            Color(0xFFFFEB3B), // Yellow
+                            Color(0xFFFF9800), // Orange
+                            Color(0xFFFF5722), // Deep Orange
+                            Color(0xFFF44336), // Red
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+
+                    // Labels
+                    const Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          'Weak',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.grey,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                        Text(
+                          'Strong',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.grey,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+
+                    // Signal levels
+                    ..._buildSignalLevels(),
+                  ],
+                ),
+              ),
+            ),
+          ),
+
+          // Toggle Button
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeInOutCubic,
+            child: Material(
+              elevation: _isLegendExpanded ? 12 : 8,
+              borderRadius: BorderRadius.circular(_isLegendExpanded ? 20 : 28),
+              shadowColor: Colors.black.withOpacity(0.3),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 300),
+                curve: Curves.easeInOutCubic,
+                key: _legendButtonKey,
+                width: _isLegendExpanded ? 120 : 56,
+                height: 56,
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: _isLegendExpanded
+                        ? [
+                            Theme.of(context).primaryColor,
+                            Theme.of(context).primaryColor.withOpacity(0.8),
+                          ]
+                        : [Colors.white, Colors.grey.shade50],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(
+                    _isLegendExpanded ? 20 : 28,
+                  ),
+                  border: Border.all(
+                    color: _isLegendExpanded
+                        ? Colors.transparent
+                        : Colors.grey.shade300,
+                    width: 1,
+                  ),
+                ),
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(
+                      _isLegendExpanded ? 20 : 28,
+                    ),
+                    onTap: () {
+                      setState(() {
+                        _isLegendExpanded = !_isLegendExpanded;
+                      });
+                    },
+                    child: AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 200),
+                      switchInCurve: Curves.easeInOut,
+                      switchOutCurve: Curves.easeInOut,
+                      child: _isLegendExpanded
+                          ? Row(
+                              key: const ValueKey('expanded'),
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(
+                                  Icons.legend_toggle,
+                                  color: Colors.white,
+                                  size: 20,
+                                ),
+                                const SizedBox(width: 8),
+                                const Text(
+                                  'Legend',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w600,
+                                    fontSize: 14,
+                                  ),
+                                ),
+                              ],
+                            )
+                          : Icon(
+                              key: const ValueKey('collapsed'),
+                              Icons.legend_toggle_outlined,
+                              color: Colors.grey.shade700,
+                              size: 24,
+                            ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Add this helper method to build signal level indicators
+  List<Widget> _buildSignalLevels() {
+    final levels = [
+      {
+        'label': '0-20%',
+        'color': const Color(0xFF03A9F4),
+        'description': 'Very Weak',
+      },
+      {
+        'label': '20-40%',
+        'color': const Color(0xFF4CAF50),
+        'description': 'Weak',
+      },
+      {
+        'label': '40-60%',
+        'color': const Color(0xFFFFEB3B),
+        'description': 'Moderate',
+      },
+      {
+        'label': '60-80%',
+        'color': const Color(0xFFFF9800),
+        'description': 'Strong',
+      },
+      {
+        'label': '80-100%',
+        'color': const Color(0xFFF44336),
+        'description': 'Excellent',
+      },
+    ];
+
+    return levels.map((level) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 6),
+        child: Row(
+          children: [
+            Container(
+              width: 12,
+              height: 12,
+              decoration: BoxDecoration(
+                color: level['color'] as Color,
+                borderRadius: BorderRadius.circular(6),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                '${level['description']} (${level['label']})',
+                style: const TextStyle(
+                  fontSize: 11,
+                  color: Colors.black87,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }).toList();
   }
 
   void _showCustomSnackBar({
@@ -1162,290 +1998,108 @@ class _HomeScreenState extends State<HomeScreen>
     });
   }
 
-  Widget _buildStatsPage() {
-    // Calculate overall statistics
-    final totalReadings = _allSubmittedReadings.length;
-    final overallAvgSignal = totalReadings > 0
-        ? (_allSubmittedReadings
-                  .map((p) => p.intensity)
-                  .reduce((a, b) => a + b) /
-              totalReadings *
-              100)
-        : 0.0;
-
-    // Count unique locations (simplified - you can enhance this with your proximity logic)
-    final uniqueLocations = _heatPoints
-        .map(
-          (p) =>
-              '${p.latLng.latitude.toStringAsFixed(4)},${p.latLng.longitude.toStringAsFixed(4)}',
-        )
-        .toSet()
-        .length;
-
-    // Calculate signal quality breakdown - now based on ALL readings
-    Map<String, int> qualityBreakdown = {
-      'Excellent': 0,
-      'Good': 0,
-      'Fair': 0,
-      'Poor': 0,
-      'Very Poor/No Signal': 0,
-    };
-
-    for (var point in _allSubmittedReadings) {
-      // <--- CHANGED to _allSubmittedReadings
-      final percentage = point.intensity * 100;
-      if (percentage >= 80) {
-        qualityBreakdown['Excellent'] = qualityBreakdown['Excellent']! + 1;
-      } else if (percentage >= 60) {
-        qualityBreakdown['Good'] = qualityBreakdown['Good']! + 1;
-      } else if (percentage >= 40) {
-        qualityBreakdown['Fair'] = qualityBreakdown['Fair']! + 1;
-      } else if (percentage >= 20) {
-        qualityBreakdown['Poor'] = qualityBreakdown['Poor']! + 1;
-      } else {
-        qualityBreakdown['Very Poor/No Signal'] =
-            qualityBreakdown['Very Poor/No Signal']! + 1;
-      }
-    }
-
-    // Calculate network type performance - now based on ALL readings
-    Map<String, List<double>> networkStats = {};
-    for (var point in _allSubmittedReadings) {
-      // <--- CHANGED to _allSubmittedReadings
-      if (!networkStats.containsKey(point.networkType)) {
-        networkStats[point.networkType] = [];
-      }
-      networkStats[point.networkType]!.add(point.intensity);
-    }
-
-    // Calculate carrier performance - now based on ALL readings
-    Map<String, List<double>> carrierStats = {};
-    for (var point in _allSubmittedReadings) {
-      // <--- CHANGED to _allSubmittedReadings
-      if (!carrierStats.containsKey(point.carrier)) {
-        carrierStats[point.carrier] = [];
-      }
-      carrierStats[point.carrier]!.add(point.intensity);
-    }
-
-    return Padding(
-      padding: const EdgeInsets.all(16.0),
-      child: ListView(
-        children: [
-          // Overall Performance Summary
-          Card(
-            elevation: 4,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Overall Performance Summary',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: Theme.of(context).primaryColor,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  _buildStatRow('Total Readings', '$totalReadings'),
-                  _buildStatRow(
-                    'Overall Avg. Signal',
-                    '${overallAvgSignal.toStringAsFixed(1)}%',
-                  ),
-                  _buildStatRow('Unique Locations', '$uniqueLocations'),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 16),
-
-          // Signal Quality Breakdown
-          Card(
-            elevation: 4,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Signal Quality Breakdown',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: Theme.of(context).primaryColor,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  ...qualityBreakdown.entries.map((entry) {
-                    final percentage = totalReadings > 0
-                        ? (entry.value / totalReadings * 100)
-                        : 0.0;
-                    return _buildStatRow(
-                      entry.key,
-                      '${entry.value} (${percentage.toStringAsFixed(1)}%)',
-                    );
-                  }).toList(),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 16),
-
-          // Network Type Performance
-          Card(
-            elevation: 4,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Network Type Performance',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: Theme.of(context).primaryColor,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  ...networkStats.entries.map((entry) {
-                    final avgSignal =
-                        entry.value.reduce((a, b) => a + b) /
-                        entry.value.length *
-                        100;
-                    return Padding(
-                      padding: const EdgeInsets.only(bottom: 8.0),
-                      child: Column(
-                        children: [
-                          _buildStatRow(entry.key, ''),
-                          Padding(
-                            padding: const EdgeInsets.only(left: 16.0),
-                            child: Column(
-                              children: [
-                                _buildStatRow(
-                                  'Readings',
-                                  '${entry.value.length}',
-                                ),
-                                _buildStatRow(
-                                  'Avg. Signal',
-                                  '${avgSignal.toStringAsFixed(1)}%',
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    );
-                  }).toList(),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 16),
-
-          // Carrier Performance
-          Card(
-            elevation: 4,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Carrier Performance',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: Theme.of(context).primaryColor,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  ...carrierStats.entries.map((entry) {
-                    final avgSignal =
-                        entry.value.reduce((a, b) => a + b) /
-                        entry.value.length *
-                        100;
-                    return Padding(
-                      padding: const EdgeInsets.only(bottom: 8.0),
-                      child: Column(
-                        children: [
-                          _buildStatRow(entry.key, ''),
-                          Padding(
-                            padding: const EdgeInsets.only(left: 16.0),
-                            child: Column(
-                              children: [
-                                _buildStatRow(
-                                  'Readings',
-                                  '${entry.value.length}',
-                                ),
-                                _buildStatRow(
-                                  'Avg. Signal',
-                                  '${avgSignal.toStringAsFixed(1)}%',
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    );
-                  }).toList(),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildStatRow(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4.0),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(
-            label,
-            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
-          ),
-          if (value.isNotEmpty)
-            Text(
-              value,
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-            ),
-        ],
-      ),
-    );
+  List<Map<String, dynamic>> _convertReadingsForStats() {
+    return _allSubmittedReadings.map((reading) {
+      return {
+        'carrier': reading.carrier,
+        'networkType': reading.networkType,
+        'intensity': reading.intensity,
+        'latitude': reading.latLng.latitude,
+        'longitude': reading.latLng.longitude,
+        'timestamp': DateTime.now()
+            .millisecondsSinceEpoch, // You can modify this if you have actual timestamps
+      };
+    }).toList();
   }
 
   Widget _buildDrawerItem({
     required IconData icon,
     required String title,
     required VoidCallback onTap,
+    String? subtitle,
+    bool isDestructive = false,
   }) {
-    return ListTile(
-      leading: Icon(icon, color: Theme.of(context).primaryColor),
-      title: Text(
-        title,
-        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 2.0),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          splashColor: isDestructive
+              ? Colors.red.withOpacity(0.1)
+              : Theme.of(context).primaryColor.withOpacity(0.1),
+          highlightColor: isDestructive
+              ? Colors.red.withOpacity(0.05)
+              : Theme.of(context).primaryColor.withOpacity(0.05),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(
+              horizontal: 16.0,
+              vertical: 12.0,
+            ),
+            child: Row(
+              children: [
+                // Enhanced icon container
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: isDestructive
+                        ? Colors.red.withOpacity(0.1)
+                        : Theme.of(context).primaryColor.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Icon(
+                    icon,
+                    color: isDestructive
+                        ? Colors.red[600]
+                        : Theme.of(context).primaryColor,
+                    size: 20,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                // Text content
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w500,
+                          color: isDestructive
+                              ? Colors.red[600]
+                              : Theme.of(context).colorScheme.onSurface,
+                        ),
+                      ),
+                      if (subtitle != null) ...[
+                        const SizedBox(height: 2),
+                        Text(
+                          subtitle,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.onSurface.withOpacity(0.6),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                // Chevron arrow
+                Icon(
+                  Icons.chevron_right_rounded,
+                  size: 18,
+                  color: Theme.of(
+                    context,
+                  ).colorScheme.onSurface.withOpacity(0.4),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
-      onTap: onTap,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-      contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
     );
   }
 
@@ -1563,6 +2217,7 @@ class _HomeScreenState extends State<HomeScreen>
 
   @override
   Widget build(BuildContext context) {
+    final themeProvider = Provider.of<ThemeProvider>(context);
     // Define the content for each tab
     final List<Widget> _widgetOptions = <Widget>[
       // --- Map View Content ---
@@ -1620,7 +2275,9 @@ class _HomeScreenState extends State<HomeScreen>
                       Container(
                         width: double.infinity,
                         decoration: BoxDecoration(
-                          color: Colors.grey.shade100,
+                          color: Theme.of(
+                            context,
+                          ).cardColor, // Instead of Colors.grey.shade100
                           borderRadius: BorderRadius.circular(16),
                           boxShadow: [
                             BoxShadow(
@@ -1649,7 +2306,8 @@ class _HomeScreenState extends State<HomeScreen>
                                     children: [
                                       Icon(
                                         Icons.tune,
-                                        color: Colors.black87,
+                                        color:
+                                            null, // Remove hardcoded color, let theme handle it
                                         size: 20,
                                       ),
                                       SizedBox(width: 12),
@@ -1658,7 +2316,8 @@ class _HomeScreenState extends State<HomeScreen>
                                         style: TextStyle(
                                           fontSize: 16,
                                           fontWeight: FontWeight.w600,
-                                          color: Colors.black87,
+                                          color:
+                                              null, // Remove hardcoded color, let theme handle it
                                         ),
                                       ),
                                     ],
@@ -1692,10 +2351,14 @@ class _HomeScreenState extends State<HomeScreen>
                             margin: const EdgeInsets.only(top: 8),
                             padding: const EdgeInsets.all(16),
                             decoration: BoxDecoration(
-                              color: Colors.white,
+                              color: Theme.of(
+                                context,
+                              ).cardColor, // Instead of Colors.white
                               borderRadius: BorderRadius.circular(16),
                               border: Border.all(
-                                color: Colors.grey.shade200,
+                                color: Theme.of(
+                                  context,
+                                ).dividerColor, // Instead of Colors.grey.shade200
                                 width: 1,
                               ),
                               boxShadow: [
@@ -1714,12 +2377,14 @@ class _HomeScreenState extends State<HomeScreen>
                                   mainAxisAlignment:
                                       MainAxisAlignment.spaceBetween,
                                   children: [
-                                    const Row(
+                                    Row(
                                       children: [
                                         Icon(
                                           Icons.autorenew,
                                           size: 20,
-                                          color: Colors.black87,
+                                          color: Theme.of(context)
+                                              .colorScheme
+                                              .onSurface, // Instead of Colors.black87
                                         ),
                                         SizedBox(width: 8),
                                         Text(
@@ -1727,7 +2392,9 @@ class _HomeScreenState extends State<HomeScreen>
                                           style: TextStyle(
                                             fontSize: 15,
                                             fontWeight: FontWeight.w500,
-                                            color: Colors.black87,
+                                            color: Theme.of(context)
+                                                .colorScheme
+                                                .onSurface, // Instead of Colors.black87
                                           ),
                                         ),
                                       ],
@@ -1743,9 +2410,8 @@ class _HomeScreenState extends State<HomeScreen>
                                             : _stopContinuousCollection();
                                       },
                                       activeColor: Colors.white,
-                                      activeTrackColor: Theme.of(
-                                        context,
-                                      ).primaryColor,
+                                      activeTrackColor:
+                                          AppColors.getPrimaryColor(context),
                                       inactiveThumbColor: Colors.grey.shade400,
                                       inactiveTrackColor: Colors.grey.shade300,
                                       materialTapTargetSize:
@@ -1794,9 +2460,8 @@ class _HomeScreenState extends State<HomeScreen>
                                         });
                                       },
                                       activeColor: Colors.white,
-                                      activeTrackColor: Theme.of(
-                                        context,
-                                      ).primaryColor,
+                                      activeTrackColor:
+                                          AppColors.getPrimaryColor(context),
                                       inactiveThumbColor: Colors.grey.shade400,
                                       inactiveTrackColor: Colors.grey.shade300,
                                       materialTapTargetSize:
@@ -1846,68 +2511,45 @@ class _HomeScreenState extends State<HomeScreen>
                                 data: _filteredHeatPoints,
                               ),
                               heatMapOptions: HeatMapOptions(
-                                minOpacity:
-                                    0.2, // This handles the overall transparency of the heatmap
+                                minOpacity: 0.2,
                                 radius: (_currentZoom < 10)
                                     ? 24
                                     : (_currentZoom < 16)
                                     ? 18
-                                    : 14, // No value below 12–14!
+                                    : 14,
                                 gradient: <double, MaterialColor>{
-                                  // Intensity (0.0 to 1.0) : Color
-                                  0.0: Colors
-                                      .lightBlue, // Very weak signal - light blue
-                                  0.1: Colors.blue, // Weak signal - blue
-                                  0.2: Colors
-                                      .indigo, // Slightly stronger weak signal - darker blue
-
-                                  0.3: Colors
-                                      .cyan, // Transition from blue to green
-                                  0.4: Colors
-                                      .lightGreen, // Moderate signal - light green
-                                  0.5: Colors.green, // Moderate signal - green
-
-                                  0.6: Colors
-                                      .lime, // Good signal - yellowish-green
-                                  0.7: Colors
-                                      .yellow, // **Around 60% signal equivalent will be yellow**
-                                  0.8: Colors.orange, // Strong signal - orange
-
-                                  0.9: Colors
-                                      .deepOrange, // Very strong signal - deep orange
-                                  1.0: Colors.red, // Excellent signal - red
+                                  0.0: Colors.lightBlue,
+                                  0.1: Colors.blue,
+                                  0.2: Colors.indigo,
+                                  0.3: Colors.cyan,
+                                  0.4: Colors.lightGreen,
+                                  0.5: Colors.green,
+                                  0.6: Colors.lime,
+                                  0.7: Colors.yellow,
+                                  0.8: Colors.orange,
+                                  0.9: Colors.deepOrange,
+                                  1.0: Colors.red,
                                 },
                               ),
                             ),
-                          // --- PLACE THE ANIMATED MARKER CODE HERE ---
-                          // Your new AnimatedBuilder containing the MarkerLayer
                           if (_currentLocation != null &&
                               _showCurrentLocationMarker)
                             AnimatedBuilder(
-                              animation:
-                                  _markerAnimation, // Now animating _markerAnimation directly
+                              animation: _markerAnimation,
                               builder: (context, child) {
-                                final animatedPoint = _markerAnimation
-                                    .value; // Get the animated point directly
+                                final animatedPoint = _markerAnimation.value;
                                 return MarkerLayer(
                                   markers: [
                                     Marker(
-                                      point:
-                                          animatedPoint, // Use the animated point for smooth movement
-                                      width:
-                                          12.0, // Increased width/height to give the icon more space, adjust as needed
-                                      height:
-                                          12.0, // Match width for a consistent shape
+                                      point: animatedPoint,
+                                      width: 12.0,
+                                      height: 12.0,
                                       alignment: Alignment.center,
                                       child: const Center(
-                                        // Use Center to perfectly center the icon within its bounds
                                         child: Icon(
-                                          Icons
-                                              .my_location, // The location icon
-                                          color: Colors
-                                              .black, // Color of the icon inside the marker
-                                          size:
-                                              22, // Adjusted icon size to be visible but not fill the entire marker area
+                                          Icons.my_location,
+                                          color: Colors.black,
+                                          size: 22,
                                         ),
                                       ),
                                     ),
@@ -1917,6 +2559,8 @@ class _HomeScreenState extends State<HomeScreen>
                             ),
                         ],
                       ),
+
+                      _buildFloatingLegend(),
 
                       // Floating Submit Reading Button
                       if (!_isContinuousModeOn)
@@ -2041,7 +2685,7 @@ class _HomeScreenState extends State<HomeScreen>
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: _isSubmitting
                                     ? Colors.grey.shade400
-                                    : Theme.of(context).primaryColor,
+                                    : AppColors.getPrimaryColor(context),
                                 foregroundColor: Colors.white,
                                 shape: RoundedRectangleBorder(
                                   borderRadius: BorderRadius.circular(30.0),
@@ -2088,14 +2732,14 @@ class _HomeScreenState extends State<HomeScreen>
               ],
             ),
       // --- Stats View Content (Placeholder) ---
-      _buildStatsPage(),
+      StatsDashboardScreen(readings: _convertReadingsForStats()),
     ];
 
     return Scaffold(
       key:
           _scaffoldKey, // Make sure _scaffoldKey is declared in your _HomeScreenState
       drawer: Drawer(
-        backgroundColor: Colors.white,
+        backgroundColor: Theme.of(context).drawerTheme.backgroundColor,
         shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.only(
             topRight: Radius.circular(20),
@@ -2118,8 +2762,8 @@ class _HomeScreenState extends State<HomeScreen>
                   decoration: BoxDecoration(
                     gradient: LinearGradient(
                       colors: [
-                        Theme.of(context).primaryColor,
-                        Theme.of(context).primaryColor.withOpacity(0.8),
+                        AppColors.getPrimaryColor(context),
+                        AppColors.getPrimaryColor(context).withOpacity(0.8),
                       ],
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
@@ -2167,47 +2811,127 @@ class _HomeScreenState extends State<HomeScreen>
                 padding: EdgeInsets.zero,
                 physics: const NeverScrollableScrollPhysics(),
                 children: [
+                  // Enhanced menu items with subtitles
                   _buildDrawerItem(
-                    icon: Icons.info_outline,
+                    icon: Icons.info_outline_rounded,
                     title: 'About App',
+                    subtitle: 'Learn more about this app',
                     onTap: () {
                       Navigator.pop(context);
                       _showAboutDialog();
                     },
                   ),
                   _buildDrawerItem(
-                    icon: Icons.settings,
+                    icon: Icons.settings_rounded,
                     title: 'Settings',
+                    subtitle: 'Customize your experience',
                     onTap: () {
                       Navigator.pop(context);
                       _showSettingsDialog();
                     },
                   ),
                   _buildDrawerItem(
-                    icon: Icons.help_outline,
+                    icon: Icons.help_outline_rounded,
                     title: 'Help & Support',
+                    subtitle: 'Get assistance when needed',
                     onTap: () {
                       Navigator.pop(context);
                       _showHelpDialog();
                     },
                   ),
                   _buildDrawerItem(
-                    icon: Icons.delete_sweep,
+                    icon: Icons.delete_sweep_rounded,
                     title: 'Clear Data',
+                    subtitle: 'Reset all saved information',
+                    isDestructive: true,
                     onTap: () {
                       Navigator.pop(context);
                       _showClearDataDialog();
                     },
                   ),
-                  const Divider(),
+
+                  const SizedBox(height: 16),
+
+                  // Enhanced Theme Section
+                  Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 12.0),
+                    padding: const EdgeInsets.all(16.0),
+                    decoration: BoxDecoration(
+                      color: Theme.of(
+                        context,
+                      ).colorScheme.surfaceVariant.withOpacity(0.3),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: Theme.of(
+                          context,
+                        ).colorScheme.outline.withOpacity(0.2),
+                        width: 1,
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // Section header
+                        Row(
+                          children: [
+                            Icon(
+                              Icons.palette_rounded,
+                              size: 18,
+                              color: AppColors.getPrimaryColor(context),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              'Theme',
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                                color: Theme.of(context).colorScheme.onSurface,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+
+                        // Theme options using the new method
+                        _buildThemeOption(
+                          title: 'Light',
+                          icon: Icons.wb_sunny_rounded,
+                          value: ThemeMode.light,
+                          themeProvider: themeProvider,
+                        ),
+                        _buildThemeOption(
+                          title: 'Dark',
+                          icon: Icons.dark_mode_rounded,
+                          value: ThemeMode.dark,
+                          themeProvider: themeProvider,
+                        ),
+                        _buildThemeOption(
+                          title: 'System Default',
+                          icon: Icons.settings_brightness_rounded,
+                          value: ThemeMode.system,
+                          themeProvider: themeProvider,
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  const SizedBox(height: 16),
+
                   _buildDrawerItem(
-                    icon: Icons.share,
+                    icon: Icons.share_rounded,
                     title: 'Share App',
+                    subtitle: 'Tell others about this app',
                     onTap: () {
                       Navigator.pop(context);
                       ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('Share functionality coming soon!'),
+                        SnackBar(
+                          content: const Text(
+                            'Share functionality coming soon!',
+                          ),
+                          behavior: SnackBarBehavior.floating,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10),
+                          ),
                         ),
                       );
                     },
@@ -2236,8 +2960,8 @@ class _HomeScreenState extends State<HomeScreen>
           decoration: BoxDecoration(
             gradient: LinearGradient(
               colors: [
-                Theme.of(context).primaryColor,
-                Theme.of(context).primaryColor.withOpacity(0.8),
+                AppColors.getPrimaryColor(context),
+                AppColors.getPrimaryColor(context).withOpacity(0.8),
               ],
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
@@ -2263,8 +2987,10 @@ class _HomeScreenState extends State<HomeScreen>
               ),
             ),
             actions: [
+              // Remove the Stack wrapper and simplify
+              _buildSearchButton(),
               Container(
-                margin: const EdgeInsets.only(right: 8),
+                margin: const EdgeInsets.only(left: 8, right: 16),
                 child: IconButton(
                   onPressed: _refreshData,
                   icon: const Icon(Icons.refresh_rounded),
@@ -2299,22 +3025,42 @@ class _HomeScreenState extends State<HomeScreen>
           ),
         ),
       ),
-      body: PageView(
-        controller: _pageController,
-        onPageChanged: (index) {
-          setState(() {
-            _selectedIndex = index;
-          });
-          _updateNavHighlight(index);
-        },
-        children: _widgetOptions,
+      body: Stack(
+        children: [
+          // Your existing PageView
+          PageView(
+            controller: _pageController,
+            onPageChanged: (index) {
+              setState(() {
+                _selectedIndex = index;
+              });
+              _updateNavHighlight(index);
+            },
+            children: _widgetOptions,
+          ),
+          // Search overlay
+          if (_isSearchExpanded)
+            Positioned.fill(
+              child: GestureDetector(
+                onTap: _toggleSearch, // Close search when tapping outside
+                child: Container(
+                  color: Colors.black.withOpacity(0.3),
+                  child: GestureDetector(
+                    onTap:
+                        () {}, // Prevent closing when tapping on search widget
+                    child: _buildSearchOverlay(),
+                  ),
+                ),
+              ),
+            ),
+        ],
       ),
       bottomNavigationBar: Container(
         margin: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
         padding: const EdgeInsets.all(8.0),
-        height: 74.0, // <--- ADD THIS LINE! Adjust value as needed
+        height: 74.0,
         decoration: BoxDecoration(
-          color: Colors.grey.shade200,
+          color: Theme.of(context).cardColor, // Instead of Colors.grey.shade200
           borderRadius: BorderRadius.circular(30),
           boxShadow: [
             BoxShadow(
@@ -2338,11 +3084,11 @@ class _HomeScreenState extends State<HomeScreen>
                 height: 56.0, // This height is for the highlight pill
                 child: Container(
                   decoration: BoxDecoration(
-                    color: Theme.of(context).primaryColor,
+                    color: AppColors.getPrimaryColor(context),
                     borderRadius: BorderRadius.circular(25),
                     boxShadow: [
                       BoxShadow(
-                        color: Theme.of(context).primaryColor.withOpacity(0.4),
+                        color: AppColors.getPrimaryColor(context).withOpacity(0.4),
                         blurRadius: 10,
                         offset: const Offset(0, 4),
                       ),
