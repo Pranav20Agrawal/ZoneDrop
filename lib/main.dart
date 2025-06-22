@@ -1,6 +1,6 @@
 // lib/main.dart
 import 'package:flutter/material.dart';
-import 'splash_screen.dart';
+import 'screens/splash_screen.dart';
 import 'package:final_zd/theme/app_colors.dart';
 import 'package:flutter_map_tile_caching/flutter_map_tile_caching.dart';
 import 'package:provider/provider.dart';

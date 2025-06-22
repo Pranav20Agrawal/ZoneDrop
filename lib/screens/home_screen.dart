@@ -2,66 +2,21 @@ import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:flutter_map_heatmap/flutter_map_heatmap.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:network_info_plus/network_info_plus.dart';
-import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:flutter_map/flutter_map.dart';
-import 'package:connectivity_plus/connectivity_plus.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'dart:async';
 import 'dart:convert'; // for jsonEncode/jsonDecode
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_map_tile_caching/flutter_map_tile_caching.dart';
 import 'package:provider/provider.dart';
-import '../theme/theme_provider.dart';
+import '../../theme/theme_provider.dart';
 import 'package:http/http.dart' as http;
 import 'package:final_zd/theme/app_colors.dart';
-import 'screens/stats_dashboard.dart';
-
-class LatLngTween extends Tween<LatLng> {
-  LatLngTween({super.begin, super.end});
-
-  @override
-  LatLng lerp(double t) {
-    if (begin == null || end == null) {
-      return begin ?? end ?? LatLng(0, 0); // Handle nulls gracefully
-    }
-    return LatLng(
-      begin!.latitude + (end!.latitude - begin!.latitude) * t,
-      begin!.longitude + (end!.longitude - begin!.longitude) * t,
-    );
-  }
-}
-
-class SignalService {
-  static const platform = MethodChannel('com.example.final_zd/signal');
-
-  static Future<Map<String, dynamic>?> getSignalInfo() async {
-    try {
-      final result = await platform.invokeMethod('getSignalInfo');
-      return Map<String, dynamic>.from(result);
-    } on PlatformException catch (e) {
-      print("Failed to get signal info: '${e.message}'.");
-      return null;
-    }
-  }
-}
-
-/// Custom WeightedLatLng class to hold additional network information
-/// along with geographical coordinates and intensity.
-class NetworkWeightedLatLng extends WeightedLatLng {
-  final LatLng latLng;
-  final double intensity;
-  final String networkType;
-  final String carrier;
-
-  NetworkWeightedLatLng({
-    required this.latLng,
-    required this.intensity,
-    required this.networkType,
-    required this.carrier,
-  }) : super(latLng, intensity);
-}
+import 'stats_dashboard.dart';
+import '../../services/network_info_service.dart';
+import '../../services/location_service.dart';
+import '../../models/heatmap_point.dart';
+import '../utils/lat_lng_tween.dart' as custom;
 
 /// The main screen widget for displaying the network signal heatmap.
 class HomeScreen extends StatefulWidget {
@@ -126,13 +81,6 @@ class _HomeScreenState extends State<HomeScreen>
   late AnimationController _searchAnimationController;
   late Animation<double> _searchAnimation;
 
-  // Plugin Instances
-  final NetworkInfo _networkInfo = NetworkInfo();
-  final Connectivity _connectivity = Connectivity();
-  static const MethodChannel _wifiChannel = MethodChannel(
-    'com.example.final_zd.signal_analyzer/wifi_rssi',
-  );
-
   double _navHighlightLeft = 0.0;
   double _navHighlightWidth = 0.0;
 
@@ -170,7 +118,7 @@ class _HomeScreenState extends State<HomeScreen>
 
     // Initialize _markerAnimation with a default value.
     // It will be re-initialized correctly in _startLocationTracking.
-    _markerAnimation = LatLngTween(
+    _markerAnimation = custom.LatLngTween(
       begin: LatLng(0, 0),
       end: LatLng(0, 0),
     ).animate(_markerAnimationController);
@@ -212,7 +160,7 @@ class _HomeScreenState extends State<HomeScreen>
               if (_currentLocation != null) {
                 // Recreate the Animation when location changes
                 _markerAnimation =
-                    LatLngTween(
+                    custom.LatLngTween(
                       begin: _currentLocation, // Old location
                       end: newLatLng, // New location
                     ).animate(
@@ -227,8 +175,11 @@ class _HomeScreenState extends State<HomeScreen>
                 ); // Start animation
               } else {
                 // First location, just set the initial position for the animation without animating
-                _markerAnimation = LatLngTween(begin: newLatLng, end: newLatLng)
-                    .animate(
+                _markerAnimation =
+                    custom.LatLngTween(
+                      begin: newLatLng,
+                      end: newLatLng,
+                    ).animate(
                       CurvedAnimation(
                         parent: _markerAnimationController,
                         curve: Curves.easeInOutCubic,
@@ -283,8 +234,10 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   Future<void> _initializeApp() async {
-    await _checkLocationServices();
-    await _requestPermissions();
+    final locationService = LocationService();
+    await locationService.checkLocationServices();
+    await locationService.requestPermissions();
+
     await _determinePosition();
 
     WidgetsBinding.instance.addPostFrameCallback((_) async {
@@ -368,38 +321,6 @@ class _HomeScreenState extends State<HomeScreen>
     _searchDebounceTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
-  }
-
-  Future<void> _checkLocationServices() async {
-    final isEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!isEnabled) {
-      debugPrint(
-        "⚠️ Location services are disabled. Wi-Fi info may not be available.",
-      );
-    }
-  }
-
-  Future<void> _requestPermissions() async {
-    Map<Permission, PermissionStatus> statuses = await [
-      Permission.location,
-      Permission.phone,
-    ].request();
-
-    if (statuses[Permission.location]!.isDenied ||
-        statuses[Permission.phone]!.isDenied) {
-      debugPrint("❌ Required permissions denied.");
-    }
-  }
-
-  Future<int?> getWifiSignalStrength() async {
-    try {
-      final int? rssi = await _wifiChannel.invokeMethod('getWifiRssi');
-      debugPrint("📶 WiFi RSSI: $rssi dBm");
-      return rssi;
-    } on PlatformException catch (e) {
-      debugPrint("❌ Failed to get WiFi signal: ${e.message}");
-      return null;
-    }
   }
 
   void _onSearchChanged() {
@@ -543,7 +464,7 @@ class _HomeScreenState extends State<HomeScreen>
 
   Widget _buildSearchButton() {
     return Container(
-      margin: const EdgeInsets.only(right: 8),
+      margin: const EdgeInsets.only(left: 8, right: 1),
       child: IconButton(
         onPressed: _toggleSearch,
         icon: const Icon(Icons.search_rounded),
@@ -573,7 +494,7 @@ class _HomeScreenState extends State<HomeScreen>
               maxHeight: MediaQuery.of(context).size.height * 0.7,
             ),
             decoration: BoxDecoration(
-              color: Colors.white,
+              color: Theme.of(context).cardColor,
               borderRadius: BorderRadius.circular(16),
               boxShadow: [
                 BoxShadow(
@@ -591,7 +512,7 @@ class _HomeScreenState extends State<HomeScreen>
                   height: 64,
                   padding: const EdgeInsets.symmetric(horizontal: 8),
                   decoration: BoxDecoration(
-                    color: Colors.grey.shade50,
+                    color: Theme.of(context).scaffoldBackgroundColor,
                     borderRadius: const BorderRadius.only(
                       topLeft: Radius.circular(16),
                       topRight: Radius.circular(16),
@@ -831,72 +752,68 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   Future<void> _determinePosition() async {
-    bool serviceEnabled;
-    LocationPermission permission;
-
-    serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) {
-      _showLocationServiceAlertDialog();
-      setState(() {
-        _isLocating = false;
-      });
-      return;
-    }
-
-    permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-      if (permission == LocationPermission.denied) {
-        _showLocationPermissionAlertDialog('Location permissions are denied');
-        setState(() {
-          _isLocating = false;
-        });
-        return;
-      }
-    }
-
-    if (permission == LocationPermission.deniedForever) {
-      _showLocationPermissionAlertDialog(
-        'Location permissions are permanently denied. Please enable them in app settings.',
-      );
-      setState(() {
-        _isLocating = false;
-      });
-      return;
-    }
+    final locationService = LocationService();
 
     setState(() {
       _isLocating = true;
     });
-    try {
-      Position position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-        timeLimit: const Duration(seconds: 10),
-      );
+
+    final position = await locationService.determinePosition(
+      context: context,
+      onDenied: () {
+        setState(() {
+          _isLocating = false;
+        });
+      },
+      onDeniedForever: () {
+        setState(() {
+          _isLocating = false;
+        });
+      },
+    );
+
+    if (position != null) {
+      final newLatLng = LatLng(position.latitude, position.longitude);
+
       setState(() {
-        _currentLocation = LatLng(position.latitude, position.longitude);
+        if (_currentLocation != null) {
+          _markerAnimation =
+              custom.LatLngTween(
+                begin: _currentLocation!,
+                end: newLatLng,
+              ).animate(
+                CurvedAnimation(
+                  parent: _markerAnimationController,
+                  curve: Curves.easeInOutCubic,
+                ),
+              );
+          _markerAnimationController.forward(from: 0);
+        } else {
+          _markerAnimation =
+              custom.LatLngTween(begin: newLatLng, end: newLatLng).animate(
+                CurvedAnimation(
+                  parent: _markerAnimationController,
+                  curve: Curves.easeInOutCubic,
+                ),
+              );
+        }
+
+        _currentLocation = newLatLng;
         _isLocating = false;
       });
-      print(
-        'Current Location: ${_currentLocation!.latitude}, ${_currentLocation!.longitude}',
-      );
-    } catch (e) {
-      print('Error getting location: $e');
-      setState(() {
-        _isLocating = false;
-      });
+
+      print('Current Location: ${newLatLng.latitude}, ${newLatLng.longitude}');
     }
   }
 
   Future<void> fetchSignalInfo() async {
     try {
-      final Map<String, dynamic> result = await _wifiChannel.invokeMethod(
-        'getSignalInfo',
-      );
+      final networkInfo = NetworkInfoService();
+      final result = await networkInfo.getNetworkSignalInfo();
 
       final String networkType = result['networkType'];
-      final String carrier = result['carrier'];
-      final int signalStrength = result['signalStrengthDbm'];
+      final String carrier = result['carrierName'];
+      final double signalStrength = result['signalStrengthDbm'].toDouble();
 
       debugPrint("📶 Network Type: $networkType");
       debugPrint("📡 Carrier: $carrier");
@@ -904,10 +821,11 @@ class _HomeScreenState extends State<HomeScreen>
 
       final point = NetworkWeightedLatLng(
         latLng: LatLng(_currentLocation!.latitude, _currentLocation!.longitude),
-        intensity: signalStrength.toDouble(),
+        intensity: signalStrength,
         networkType: networkType,
         carrier: carrier,
       );
+
       setState(() {
         _heatPoints.add(point);
         _applyHeatmapFilter();
@@ -922,7 +840,7 @@ class _HomeScreenState extends State<HomeScreen>
       const Duration(seconds: 1), // Adjust interval as needed
       (timer) async {
         if (_currentLocation != null) {
-          final signalInfo = await _getNetworkSignalInfo();
+          final signalInfo = await NetworkInfoService().getNetworkSignalInfo();
           final String networkType = signalInfo['networkType'];
           final double signalWeight = signalInfo['signalWeight'];
           final String carrierName = signalInfo['carrierName'];
@@ -979,38 +897,6 @@ class _HomeScreenState extends State<HomeScreen>
     });
   }
 
-  void _showLocationServiceAlertDialog() {
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-          ),
-          title: const Row(
-            children: [
-              Icon(Icons.location_off, color: Colors.orange),
-              SizedBox(width: 8),
-              Text("Location Services Disabled"),
-            ],
-          ),
-          content: const Text(
-            'Please enable location services to use this app.',
-          ),
-          actions: <Widget>[
-            TextButton(
-              child: const Text("OK"),
-              onPressed: () {
-                Navigator.of(context).pop();
-                Geolocator.openLocationSettings();
-              },
-            ),
-          ],
-        );
-      },
-    );
-  }
-
   Future<void> _refreshData() async {
     setState(() {
       _isLocating = true;
@@ -1031,223 +917,6 @@ class _HomeScreenState extends State<HomeScreen>
       _isLocating = false;
       _heatmapKey = UniqueKey();
     });
-  }
-
-  void _showLocationPermissionAlertDialog(String message) {
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-          ),
-          title: const Row(
-            children: [
-              Icon(Icons.location_disabled, color: Colors.red),
-              SizedBox(width: 8),
-              Text("Location Permission Denied"),
-            ],
-          ),
-          content: Text(message),
-          actions: <Widget>[
-            TextButton(
-              child: const Text("OK"),
-              onPressed: () {
-                Navigator.of(context).pop();
-                Geolocator.openAppSettings();
-              },
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  Future<int?> _getWifiRssiNative() async {
-    if (Platform.isAndroid) {
-      try {
-        final int? rssi = await _wifiChannel.invokeMethod('getWifiRssi');
-        return rssi;
-      } on PlatformException catch (e) {
-        print(
-          "Failed to get Wi-Fi RSSI from native: '${e.message}'. Ensure location permissions are granted.",
-        );
-        return null;
-      }
-    }
-    return null;
-  }
-
-  String _normalizeCarrierName(String rawName, String networkType) {
-    final lowerCaseRawName = rawName.toLowerCase();
-
-    if (networkType == 'Wi-Fi') {
-      if (lowerCaseRawName.contains('airtel')) {
-        return 'Airtel';
-      } else if (lowerCaseRawName.contains('jiofiber') ||
-          lowerCaseRawName.contains('jio')) {
-        return 'JioFiber';
-      } else if (lowerCaseRawName.contains('bsnl')) {
-        return 'BSNL';
-      }
-      return rawName;
-    } else if (networkType == '4G' ||
-        networkType == '3G' ||
-        networkType == '5G' ||
-        networkType == '2G') {
-      if (lowerCaseRawName.contains('airtel')) {
-        return 'Airtel';
-      } else if (lowerCaseRawName.contains('jio')) {
-        return 'Jio';
-      } else if (lowerCaseRawName.contains('vodafone') ||
-          lowerCaseRawName.contains('vi')) {
-        return 'Vi';
-      } else if (lowerCaseRawName.contains('bsnl')) {
-        return 'BSNL';
-      }
-      return rawName;
-    }
-    return rawName;
-  }
-
-  Future<Map<String, dynamic>> _getNetworkSignalInfo() async {
-    String networkType = 'Unknown';
-    double signalWeight = 0.0;
-    String carrierName = 'Unknown';
-    int signalStrengthDbm = -999;
-    String signalStatusMessage = 'Initializing...';
-
-    try {
-      final List<ConnectivityResult> connectivityResults = await _connectivity
-          .checkConnectivity();
-      String connectionStatus = 'none';
-
-      if (connectivityResults.contains(ConnectivityResult.mobile)) {
-        connectionStatus = 'mobile';
-      } else if (connectivityResults.contains(ConnectivityResult.wifi)) {
-        connectionStatus = 'wifi';
-      } else if (connectivityResults.contains(ConnectivityResult.ethernet)) {
-        connectionStatus = 'ethernet';
-      } else if (connectivityResults.contains(ConnectivityResult.none)) {
-        connectionStatus = 'none';
-      }
-
-      if (connectionStatus == 'wifi') {
-        final String? wifiName = await _networkInfo.getWifiName();
-        final int? wifiRssi = Platform.isAndroid
-            ? await _getWifiRssiNative()
-            : null;
-
-        networkType = 'Wi-Fi';
-
-        if (wifiName != null && wifiRssi != null) {
-          String rawWifiCarrierName = wifiName.replaceAll('"', '');
-          carrierName = _normalizeCarrierName(rawWifiCarrierName, networkType);
-          signalStrengthDbm = wifiRssi;
-
-          const double minWifiDbm = -85.0;
-          const double maxWifiDbm = -30.0;
-
-          double normalizedWifi =
-              (signalStrengthDbm - minWifiDbm) / (maxWifiDbm - minWifiDbm);
-          signalWeight = normalizedWifi.clamp(0.1, 0.9);
-
-          signalStatusMessage = '$signalStrengthDbm dBm';
-          debugPrint(
-            'Wi-Fi: "$carrierName", RSSI: $signalStrengthDbm dBm, Weight: $signalWeight',
-          );
-        } else if (wifiName != null) {
-          String rawWifiCarrierName = wifiName.replaceAll('"', '');
-          carrierName = _normalizeCarrierName(rawWifiCarrierName, networkType);
-          signalStrengthDbm = -999;
-          signalWeight = 0.3;
-          signalStatusMessage = 'RSSI unavailable, using default weight.';
-          debugPrint('Wi-Fi: "$carrierName", $signalStatusMessage');
-        } else {
-          carrierName = 'Unknown Wi-Fi';
-          signalStrengthDbm = -999;
-          signalWeight = 0.1;
-          signalStatusMessage = 'Wi-Fi Name/RSSI unavailable.';
-          debugPrint('Wi-Fi: "$carrierName", $signalStatusMessage');
-        }
-      } else if (connectionStatus == 'mobile') {
-        final Map<dynamic, dynamic>? signalInfo =
-            await SignalService.getSignalInfo();
-
-        if (signalInfo != null) {
-          String rawNetworkType =
-              signalInfo['networkType'] as String? ?? 'cellular';
-          String rawCarrierName =
-              signalInfo['carrier'] as String? ?? 'Unknown Carrier';
-          signalStrengthDbm = signalInfo['signalStrengthDbm'] as int? ?? -999;
-          signalStatusMessage =
-              signalInfo['signalStatus'] as String? ?? 'Status Unavailable';
-
-          networkType = rawNetworkType;
-          carrierName = _normalizeCarrierName(rawCarrierName, networkType);
-
-          if (signalStrengthDbm != -1 && signalStrengthDbm != -9999) {
-            const double minCellularDbm = -120.0;
-            const double maxCellularDbm = -80.0;
-
-            double normalizedCellular =
-                (signalStrengthDbm - minCellularDbm) /
-                (maxCellularDbm - minCellularDbm);
-            signalWeight = normalizedCellular.clamp(0.1, 0.9);
-
-            debugPrint(
-              'Cellular Type: $networkType, Carrier: $carrierName, dBm: $signalStrengthDbm, Weight: $signalWeight, Status: $signalStatusMessage',
-            );
-          } else {
-            debugPrint(
-              'Cellular Type: $networkType, Carrier: $carrierName, Status: $signalStatusMessage',
-            );
-            if (networkType == '5G') {
-              signalWeight = 0.8;
-            } else if (networkType == '4G') {
-              signalWeight = 0.6;
-            } else if (networkType == '3G') {
-              signalWeight = 0.4;
-            } else if (networkType == '2G') {
-              signalWeight = 0.2;
-            } else {
-              signalWeight = 0.1;
-            }
-          }
-        } else {
-          debugPrint('SignalService failed, using default cellular values');
-          networkType = 'cellular';
-          carrierName = 'Unknown Carrier';
-          signalStrengthDbm = -999;
-          signalWeight = 0.1;
-          signalStatusMessage = 'Failed to get cellular info from native.';
-        }
-      } else {
-        debugPrint(
-          'Not connected to Wi-Fi or Cellular. Connection Status: $connectionStatus',
-        );
-        networkType = 'None';
-        carrierName = 'No Connection';
-        signalStrengthDbm = -999;
-        signalWeight = 0.0;
-        signalStatusMessage = 'No active network connection.';
-      }
-    } catch (e) {
-      debugPrint('Failed to get network info: $e');
-      networkType = 'Error';
-      signalWeight = 0.0;
-      carrierName = 'Error';
-      signalStrengthDbm = -999;
-      signalStatusMessage = 'Error during signal fetching: $e';
-    }
-
-    return {
-      'networkType': networkType,
-      'signalWeight': signalWeight,
-      'carrierName': carrierName,
-      'signalStrengthDbm': signalStrengthDbm,
-      'signalStatusMessage': signalStatusMessage,
-    };
   }
 
   // Method for theme options
@@ -2427,12 +2096,14 @@ class _HomeScreenState extends State<HomeScreen>
                                   mainAxisAlignment:
                                       MainAxisAlignment.spaceBetween,
                                   children: [
-                                    const Row(
+                                    Row(
                                       children: [
                                         Icon(
                                           Icons.my_location,
                                           size: 20,
-                                          color: Colors.black87,
+                                          color: Theme.of(
+                                            context,
+                                          ).colorScheme.onSurface,
                                         ),
                                         SizedBox(width: 8),
                                         Text(
@@ -2440,7 +2111,9 @@ class _HomeScreenState extends State<HomeScreen>
                                           style: TextStyle(
                                             fontSize: 15,
                                             fontWeight: FontWeight.w500,
-                                            color: Colors.black87,
+                                            color: Theme.of(
+                                              context,
+                                            ).colorScheme.onSurface,
                                           ),
                                         ),
                                       ],
@@ -2602,7 +2275,9 @@ class _HomeScreenState extends State<HomeScreen>
                                         if (!_isLocating &&
                                             _currentLocation != null) {
                                           final signalInfo =
-                                              await _getNetworkSignalInfo();
+                                              await NetworkInfoService()
+                                                  .getNetworkSignalInfo();
+
                                           final String networkType =
                                               signalInfo['networkType'];
                                           final double signalWeight =
@@ -2987,10 +2662,16 @@ class _HomeScreenState extends State<HomeScreen>
               ),
             ),
             actions: [
-              // Remove the Stack wrapper and simplify
-              _buildSearchButton(),
               Container(
-                margin: const EdgeInsets.only(left: 8, right: 16),
+                margin: const EdgeInsets.only(
+                  right: 6,
+                ), // Add small spacing *after* search button
+                child: _buildSearchButton(),
+              ),
+              Container(
+                margin: const EdgeInsets.only(
+                  right: 12,
+                ), // Reduce spacing from the edge
                 child: IconButton(
                   onPressed: _refreshData,
                   icon: const Icon(Icons.refresh_rounded),
@@ -3088,7 +2769,9 @@ class _HomeScreenState extends State<HomeScreen>
                     borderRadius: BorderRadius.circular(25),
                     boxShadow: [
                       BoxShadow(
-                        color: AppColors.getPrimaryColor(context).withOpacity(0.4),
+                        color: AppColors.getPrimaryColor(
+                          context,
+                        ).withOpacity(0.4),
                         blurRadius: 10,
                         offset: const Offset(0, 4),
                       ),

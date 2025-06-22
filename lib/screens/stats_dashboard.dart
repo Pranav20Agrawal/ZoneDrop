@@ -28,6 +28,7 @@ class _StatsDashboardScreenState extends State<StatsDashboardScreen>
   String strongestNetwork = 'N/A';
   double averageSignal = 0.0;
   int totalReadings = 0;
+  bool hasAnimatedOnce = false;
 
   Map<String, double> carrierAvgSignal = {};
   List<Map<String, dynamic>> hourlyStats = [];
@@ -44,8 +45,26 @@ class _StatsDashboardScreenState extends State<StatsDashboardScreen>
   void initState() {
     super.initState();
     _setupAnimations();
-    _processData();
     _startAnimations();
+    _processData();
+
+    // Mark animations as complete after first build
+    Future.delayed(Duration.zero, () {
+      setState(() {
+        hasAnimatedOnce = true;
+      });
+    });
+  }
+
+  @override
+  @override
+  void didUpdateWidget(covariant StatsDashboardScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    if (oldWidget.readings != widget.readings ||
+        oldWidget.readings.length != widget.readings.length) {
+      setState(_processData);
+    }
   }
 
   void _setupAnimations() {
@@ -75,6 +94,8 @@ class _StatsDashboardScreenState extends State<StatsDashboardScreen>
   }
 
   void _startAnimations() {
+    if (hasAnimatedOnce) return; // 🔒 Prevent re-running after first time
+
     Future.delayed(const Duration(milliseconds: 100), () {
       _fadeController.forward();
     });
@@ -90,6 +111,14 @@ class _StatsDashboardScreenState extends State<StatsDashboardScreen>
     networkTypeCount.clear();
     carrierCount.clear();
     signalOverTime.clear();
+    carrierAvgSignal.clear();
+
+    strongSignalCount = 0;
+    moderateSignalCount = 0;
+    weakSignalCount = 0;
+    maxSignal = 0.0;
+    minSignal = 100.0;
+    signalVariance = 0.0;
 
     if (widget.readings.isEmpty) return;
 
@@ -323,8 +352,8 @@ class _StatsDashboardScreenState extends State<StatsDashboardScreen>
     required int delay,
   }) {
     return TweenAnimationBuilder<double>(
-      duration: Duration(milliseconds: 800 + delay),
-      tween: Tween(begin: 0.0, end: 1.0),
+      duration: hasAnimatedOnce ? Duration.zero : Duration(milliseconds: 800),
+      tween: Tween(begin: hasAnimatedOnce ? 1.0 : 0.0, end: 1.0),
       curve: Curves.elasticOut,
       builder: (context, animation, child) {
         return Transform.scale(
@@ -451,8 +480,8 @@ class _StatsDashboardScreenState extends State<StatsDashboardScreen>
     required int delay,
   }) {
     return TweenAnimationBuilder<double>(
-      duration: Duration(milliseconds: 600 + delay),
-      tween: Tween(begin: 0.0, end: 1.0),
+      duration: hasAnimatedOnce ? Duration.zero : Duration(milliseconds: 800),
+      tween: Tween(begin: hasAnimatedOnce ? 1.0 : 0.0, end: 1.0),
       curve: Curves.easeOutCubic,
       builder: (context, animation, _) {
         return Transform.translate(
@@ -533,8 +562,8 @@ class _StatsDashboardScreenState extends State<StatsDashboardScreen>
   Widget _buildPieChart(Map<String, int> data) {
     final total = data.values.fold(0, (a, b) => a + b);
     return TweenAnimationBuilder<double>(
-      duration: const Duration(milliseconds: 1500),
-      tween: Tween(begin: 0.0, end: 1.0),
+      duration: hasAnimatedOnce ? Duration.zero : Duration(milliseconds: 800),
+      tween: Tween(begin: hasAnimatedOnce ? 1.0 : 0.0, end: 1.0),
       curve: Curves.easeOutCubic,
       builder: (context, animation, child) {
         return PieChart(
@@ -570,8 +599,10 @@ class _StatsDashboardScreenState extends State<StatsDashboardScreen>
       mainAxisAlignment: MainAxisAlignment.center,
       children: data.entries.map((entry) {
         return TweenAnimationBuilder<double>(
-          duration: const Duration(milliseconds: 800),
-          tween: Tween(begin: 0.0, end: 1.0),
+          duration: hasAnimatedOnce
+              ? Duration.zero
+              : Duration(milliseconds: 800),
+          tween: Tween(begin: hasAnimatedOnce ? 1.0 : 0.0, end: 1.0),
           curve: Curves.easeOutCubic,
           builder: (context, animation, child) {
             return Transform.translate(
@@ -614,8 +645,8 @@ class _StatsDashboardScreenState extends State<StatsDashboardScreen>
         : 1;
 
     return TweenAnimationBuilder<double>(
-      duration: const Duration(milliseconds: 1200),
-      tween: Tween(begin: 0.0, end: 1.0),
+      duration: hasAnimatedOnce ? Duration.zero : Duration(milliseconds: 800),
+      tween: Tween(begin: hasAnimatedOnce ? 1.0 : 0.0, end: 1.0),
       curve: Curves.easeOutCubic,
       builder: (context, animation, child) {
         return BarChart(
@@ -710,8 +741,8 @@ class _StatsDashboardScreenState extends State<StatsDashboardScreen>
     final xInterval = maxX > 20 ? (maxX / 8).ceil().toDouble() : 2.0;
 
     return TweenAnimationBuilder<double>(
-      duration: const Duration(milliseconds: 1500),
-      tween: Tween(begin: 0.0, end: 1.0),
+      duration: hasAnimatedOnce ? Duration.zero : Duration(milliseconds: 800),
+      tween: Tween(begin: hasAnimatedOnce ? 1.0 : 0.0, end: 1.0),
       curve: Curves.easeOutCubic,
       builder: (context, animation, child) {
         final animatedData = data.map((spot) {
@@ -1093,8 +1124,8 @@ class _StatsDashboardScreenState extends State<StatsDashboardScreen>
 
   Widget _buildDetailRow(String label, String value, IconData icon) {
     return TweenAnimationBuilder<double>(
-      duration: const Duration(milliseconds: 800),
-      tween: Tween(begin: 0.0, end: 1.0),
+      duration: hasAnimatedOnce ? Duration.zero : Duration(milliseconds: 800),
+      tween: Tween(begin: hasAnimatedOnce ? 1.0 : 0.0, end: 1.0),
       curve: Curves.easeOutCubic,
       builder: (context, animation, child) {
         return Transform.translate(
@@ -1159,8 +1190,8 @@ class _StatsDashboardScreenState extends State<StatsDashboardScreen>
     };
 
     return TweenAnimationBuilder<double>(
-      duration: const Duration(milliseconds: 1500),
-      tween: Tween(begin: 0.0, end: 1.0),
+      duration: hasAnimatedOnce ? Duration.zero : Duration(milliseconds: 800),
+      tween: Tween(begin: hasAnimatedOnce ? 1.0 : 0.0, end: 1.0),
       curve: Curves.easeOutCubic,
       builder: (context, animation, child) {
         return PieChart(
@@ -1228,8 +1259,10 @@ class _StatsDashboardScreenState extends State<StatsDashboardScreen>
         }
 
         return TweenAnimationBuilder<double>(
-          duration: const Duration(milliseconds: 800),
-          tween: Tween(begin: 0.0, end: 1.0),
+          duration: hasAnimatedOnce
+              ? Duration.zero
+              : Duration(milliseconds: 800),
+          tween: Tween(begin: hasAnimatedOnce ? 1.0 : 0.0, end: 1.0),
           curve: Curves.easeOutCubic,
           builder: (context, animation, child) {
             return Transform.translate(
@@ -1303,8 +1336,8 @@ class _StatsDashboardScreenState extends State<StatsDashboardScreen>
       ..sort((a, b) => b.value.compareTo(a.value));
 
     return TweenAnimationBuilder<double>(
-      duration: const Duration(milliseconds: 1200),
-      tween: Tween(begin: 0.0, end: 1.0),
+      duration: hasAnimatedOnce ? Duration.zero : Duration(milliseconds: 800),
+      tween: Tween(begin: hasAnimatedOnce ? 1.0 : 0.0, end: 1.0),
       curve: Curves.easeOutCubic,
       builder: (context, animation, child) {
         return Column(
