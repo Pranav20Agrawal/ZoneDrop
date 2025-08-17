@@ -35,6 +35,8 @@ dependencies:
   flutter_map_tile_caching: ^9.0.1
   provider: ^6.1.5
   fl_chart: ^1.0.0
+  get_it: ^7.7.0
+  logger: ^2.3.0
 
 dev_dependencies: # <--- This is where flutter_launcher_icons should go
   flutter_test:
